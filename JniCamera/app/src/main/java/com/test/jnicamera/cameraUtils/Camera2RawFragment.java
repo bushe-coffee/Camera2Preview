@@ -36,6 +36,7 @@ import android.os.Message;
 import android.support.v13.app.FragmentCompat;
 import android.support.v4.app.ActivityCompat;
 import android.util.Log;
+import android.util.Range;
 import android.util.Size;
 import android.util.SparseIntArray;
 import android.view.LayoutInflater;
@@ -256,6 +257,7 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
         public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
             System.out.println("majie   " + System.currentTimeMillis());
             // TODO 可以 停止 重复 请求
+
         }
     };
 
@@ -475,8 +477,6 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
 
     /**
      * Creates a new CameraCaptureSession for camera preview.
-     * <p/>
-     * Call this only with {@link #mCameraStateLock} held.
      */
     private void createCameraPreviewSessionLocked() {
         try {
@@ -490,6 +490,7 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
             // We set up a CaptureRequest.Builder with the output Surface.
             mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             mPreviewRequestBuilder.addTarget(surface);
+            // 添加 这个 是为了 在 mJpegImageReader 的回调函数中接受 byte
             mPreviewRequestBuilder.addTarget(mJpegImageReader.get().getSurface());
 
             // Here, we create a CameraCaptureSession for camera preview.
@@ -537,15 +538,12 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
     /**
      * Configure the given {@link CaptureRequest.Builder} to use auto-focus, auto-exposure, and
      * auto-white-balance controls if available.
-     * <p/>
-     * Call this only with {@link #mCameraStateLock} held.
-     *
-     * @param builder the builder to configure.
      */
     private void setup3AControlsLocked(CaptureRequest.Builder builder) {
+
+
         // Enable auto-magical 3A run by camera device
-        builder.set(CaptureRequest.CONTROL_MODE,
-                CaptureRequest.CONTROL_MODE_AUTO);
+        builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
 
         Float minFocusDist =
                 mCharacteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
@@ -716,10 +714,6 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
 
     /**
      * Return true if the given array contains the given integer.
-     *
-     * @param modes array to check.
-     * @param mode  integer to get for.
-     * @return true if the array contains the given integer, otherwise false.
      */
     private static boolean contains(int[] modes, int mode) {
         if (modes == null) {
