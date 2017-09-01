@@ -10,11 +10,16 @@ import android.app.Fragment;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
 import android.graphics.ImageFormat;
 import android.graphics.Matrix;
 import android.graphics.Point;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.graphics.YuvImage;
 import android.hardware.SensorManager;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
@@ -28,11 +33,16 @@ import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
+import android.opengl.GLES20;
+import android.opengl.GLSurfaceView;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
+import android.support.annotation.NonNull;
+import android.support.annotation.RequiresApi;
 import android.support.v13.app.FragmentCompat;
 import android.support.v4.app.ActivityCompat;
 import android.util.Log;
@@ -42,16 +52,22 @@ import android.util.SparseIntArray;
 import android.view.LayoutInflater;
 import android.view.OrientationEventListener;
 import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageView;
 import android.widget.Toast;
 
 import com.test.jnicamera.R;
 import com.test.jnicamera.dialogUtils.DialogResultCallBack;
 import com.test.jnicamera.dialogUtils.SystemDialog;
 
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -59,6 +75,12 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+
+import javax.microedition.khronos.egl.EGL10;
+import javax.microedition.khronos.egl.EGLConfig;
+import javax.microedition.khronos.egl.EGLDisplay;
+import javax.microedition.khronos.egl.EGLSurface;
+import javax.microedition.khronos.opengles.GL10;
 
 public class Camera2RawFragment extends Fragment implements FragmentCompat.OnRequestPermissionsResultCallback {
 
@@ -126,8 +148,6 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
      */
     private CameraCharacteristics mCharacteristics;
 
-    private RefCountedAutoCloseable<ImageReader> mJpegImageReader;
-
     private RefCountedAutoCloseable<ImageReader> mRawImageReader;
 
     private boolean mNoAFRun = false;
@@ -178,9 +198,11 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
                 mCameraOpenCloseLock.release();
                 mCameraDevice = cameraDevice;
 
+                // Start the preview session if the TextureView has been set up already.
                 if (mPreviewSize != null && mTextureView.isAvailable()) {
                     createCameraPreviewSessionLocked();
                 }
+
             }
         }
 
@@ -210,35 +232,39 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
         }
     };
 
-    private ImageReader.OnImageAvailableListener mOnJpegImageAvailableListener = new ImageReader.OnImageAvailableListener() {
-
-        @Override
-        public void onImageAvailable(ImageReader reader) {
-            /**
-             *  因为Camera2并没有Camera1的Priview回调！！！所以该怎么能到预览图像的byte[]呢？就是在这里了！！！
-             **/
-            Image image = reader.acquireNextImage();
-            if (image != null) {
-                Image.Plane[] planes = image.getPlanes();
-                ByteBuffer buffer = planes[0].getBuffer();
-                buffer.rewind();
-                byte[] data = new byte[buffer.capacity()];
-                buffer.get(data);
-                image.close();
-            }
-        }
-    };
-
     private ImageReader.OnImageAvailableListener mOnRawImageAvailableListener = new ImageReader.OnImageAvailableListener() {
         @Override
         public void onImageAvailable(ImageReader reader) {
+
+            /**
+             *  因为Camera2并没有Camera1的Priview回调！！！所以该怎么能到预览图像的byte[]呢？就是在这里了！！！
+             **/
+
             Image image = reader.acquireNextImage();
+            System.out.println("majie     " + reader.getImageFormat());
             if (image != null) {
                 Image.Plane[] planes = image.getPlanes();
                 ByteBuffer buffer = planes[0].getBuffer();
                 buffer.rewind();
-                byte[] data = new byte[buffer.capacity()];
+                byte[] data = new byte[buffer.remaining()];
                 buffer.get(data);
+
+                System.out.println("majie1   " + System.currentTimeMillis());
+
+                final Bitmap bitmap = BitmapFactory.decodeByteArray(data, 0, data.length);
+
+                System.out.println("majie2   " + System.currentTimeMillis());
+
+                getActivity().runOnUiThread(new Runnable() {
+
+                    @Override
+                    public void run() {
+//                        imageView.setImageBitmap(bitmap);
+                        System.out.println("majie3   " + System.currentTimeMillis());
+                    }
+                });
+
+
                 image.close();
             }
         }
@@ -255,9 +281,11 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
 
         @Override
         public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
-            System.out.println("majie   " + System.currentTimeMillis());
             // TODO 可以 停止 重复 请求
+        }
 
+        @Override
+        public void onCaptureStarted(CameraCaptureSession session, CaptureRequest request, long timestamp, long frameNumber) {
         }
     };
 
@@ -293,10 +321,6 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
                         CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
 
                 // For still image captures, we use the largest available size.
-                Size largestJpeg = Collections.max(
-                        Arrays.asList(map.getOutputSizes(ImageFormat.JPEG)),
-                        new CompareSizesByArea());
-
                 Size largestRaw = Collections.max(
                         Arrays.asList(map.getOutputSizes(ImageFormat.RAW_SENSOR)),
                         new CompareSizesByArea());
@@ -305,19 +329,11 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
                     // Set up ImageReaders for JPEG and RAW outputs.  Place these in a reference
                     // counted wrapper to ensure they are only closed when all background tasks
                     // using them are finished.
-                    if (mJpegImageReader == null || mJpegImageReader.getAndRetain() == null) {
-                        mJpegImageReader = new RefCountedAutoCloseable<>(
-                                ImageReader.newInstance(largestJpeg.getWidth(),
-                                        largestJpeg.getHeight(), ImageFormat.JPEG, /*maxImages*/5));
-                    }
-
-                    mJpegImageReader.get().setOnImageAvailableListener(
-                            mOnJpegImageAvailableListener, mBackgroundHandler);
 
                     if (mRawImageReader == null || mRawImageReader.getAndRetain() == null) {
                         mRawImageReader = new RefCountedAutoCloseable<>(
                                 ImageReader.newInstance(largestRaw.getWidth(),
-                                        largestRaw.getHeight(), ImageFormat.RAW_SENSOR, /*maxImages*/ 5));
+                                        largestRaw.getHeight(), ImageFormat.JPEG, /*maxImages*/ 5));
                     }
 
                     mRawImageReader.get().setOnImageAvailableListener(
@@ -326,6 +342,7 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
                     mCharacteristics = characteristics;
                     mCameraId = cameraId;
                 }
+
                 return true;
             }
         } catch (CameraAccessException e) {
@@ -443,10 +460,7 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
                     mCameraDevice.close();
                     mCameraDevice = null;
                 }
-                if (null != mJpegImageReader) {
-                    mJpegImageReader.close();
-                    mJpegImageReader = null;
-                }
+
                 if (null != mRawImageReader) {
                     mRawImageReader.close();
                     mRawImageReader = null;
@@ -480,24 +494,20 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
      */
     private void createCameraPreviewSessionLocked() {
         try {
-            SurfaceTexture texture = mTextureView.getSurfaceTexture();
-            // We configure the size of default buffer to be the size of camera preview we want.
-            texture.setDefaultBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
-
             // This is the output Surface we need to start preview.
+            SurfaceTexture texture = mTextureView.getSurfaceTexture();
+            texture.setDefaultBufferSize(mPreviewSize.getWidth(), mPreviewSize.getHeight());
             Surface surface = new Surface(texture);
 
             // We set up a CaptureRequest.Builder with the output Surface.
             mPreviewRequestBuilder = mCameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
             mPreviewRequestBuilder.addTarget(surface);
             // 添加 这个 是为了 在 mJpegImageReader 的回调函数中接受 byte
-            mPreviewRequestBuilder.addTarget(mJpegImageReader.get().getSurface());
+            mPreviewRequestBuilder.addTarget(mRawImageReader.get().getSurface());
 
             // Here, we create a CameraCaptureSession for camera preview.
             // 设置 预览  预览的 surface 有 三个
-            mCameraDevice.createCaptureSession(Arrays.asList(surface,
-                    mJpegImageReader.get().getSurface(),
-                    mRawImageReader.get().getSurface()), new CameraCaptureSession.StateCallback() {
+            mCameraDevice.createCaptureSession(Arrays.asList(surface, mRawImageReader.get().getSurface()), new CameraCaptureSession.StateCallback() {
                         @Override
                         public void onConfigured(CameraCaptureSession cameraCaptureSession) {
                             synchronized (mCameraStateLock) {
@@ -528,6 +538,8 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
                         public void onConfigureFailed(CameraCaptureSession cameraCaptureSession) {
                             showToast("Failed to configure camera.");
                         }
+
+
                     }, mBackgroundHandler
             );
         } catch (CameraAccessException e) {
@@ -800,6 +812,8 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
 
 
     //  ********************************************************
+    private ImageView imageView;
+
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
@@ -811,6 +825,7 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
 
         // activity 执行 完成
         mTextureView = view.findViewById(R.id.texture);
+
 
         // 在播放视频的时候，可能要做横竖屏的切换，但是，用户可以设置自己的手机关掉屏幕旋转，
         // 这个时候就需要想其他的办法了，比如：加速传感器或者OrientationEventListener。
@@ -829,16 +844,15 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
     public void onResume() {
         super.onResume();
         startBackgroundThread();
-        openCamera();
 
-        if (mTextureView.isAvailable()) {
-            configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
-        } else {
-            mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
-        }
+        openCamera();
+        configureTransform(mTextureView.getWidth(), mTextureView.getHeight());
+
+
         if (mOrientationListener != null && mOrientationListener.canDetectOrientation()) {
             mOrientationListener.enable();
         }
+
     }
 
     @Override
@@ -850,6 +864,7 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
         closeCamera();
         stopBackgroundThread();
         super.onPause();
+
     }
 
     @Override
@@ -995,4 +1010,10 @@ public class Camera2RawFragment extends Fragment implements FragmentCompat.OnReq
         message.obj = text;
         mMessageHandler.sendMessage(message);
     }
+
+    //*******************************************************************************************
+    //*******************************************************************************************
+    //*******************************************************************************************
+    //*******************************************************************************************
+
 }

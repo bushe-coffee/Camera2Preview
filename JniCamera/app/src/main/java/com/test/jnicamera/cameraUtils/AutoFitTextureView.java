@@ -18,6 +18,7 @@ package com.test.jnicamera.cameraUtils;
 
 import android.content.Context;
 import android.util.AttributeSet;
+import android.view.SurfaceView;
 import android.view.TextureView;
 
 public class AutoFitTextureView extends TextureView {
